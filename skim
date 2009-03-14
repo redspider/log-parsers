@@ -1,0 +1,154 @@
+#!/usr/bin/python
+"""
+skim: A file reader that skips lines efficiently
+
+Copyright (c) 2009, Richard Clark, Red Spider Limited <richard@redspider.co.nz>
+Contributers include:
+    Mark Kirkwood (original python implementation)
+    Stephen J (Some script boilerplate code adopted from his NZPUG presentation)
+
+See LICENSE file for details.
+
+WARNING: This program is still being developed. The accuracy of the
+average line length estimator means you really need a big, relatively consistent
+file for it to work properly (ie, a few GB of apache logs). The stream-based
+mode (cat file by pipe) is much slower but completely accurate since it has
+to read everything anyway instead of seeking.
+
+TODO: If you feel like hacking on the code, there are a few useful things
+
+* Improve the line estimator so that the test suite gets exactly 100 without
+  hacks.
+* Improve the code structure so it looks prettier
+* Create a benchmark runner so that we can compare performance to:
+  * Original python implementation
+  * C implementations
+  * wc -l
+  * cat
+* Add a switch to force non-seek mode and hints in the help suggesting that if
+  you've got short line lengths and only short jumps, there's no benefit to
+  seek mode
+* Add a switch to request random-sized jumps (ie, a 100 line skip would be
+  random.randint(0, 200)) to improve random distribution.
+* Add a switch to request disk-optimised jumps (ie, a 100 line skip would
+  read say, 4 lines in a row, then skip 400 lines, to reduce the blocks read
+  from the disk)
+* Create packaging script for debian/ubuntu
+* Create man page
+
+"""
+
+import os, sys, random, logging
+from optparse import OptionParser
+
+WHENCE_RELATIVE = 1
+
+logging.basicConfig(level=logging.WARN)
+log = logging.getLogger('Skim')
+
+def skim_step_seekable(average_length, lines, file):
+    """ Steps forward using sneaky seek-based method """
+    # Seek forward average_length * lines bytes
+    log.debug("Seeking %d forward", average_length*lines)
+    file.seek(average_length*lines, WHENCE_RELATIVE)
+        
+    # Try and read a line
+    
+    c = file.read(1)
+    if c != '\n':
+        # Part way through a line, skip it
+        log.debug("Skipping part-line")
+        file.readline()
+
+    # We use file.tell() to determine the length because we're after
+    # line lengths in bytes, not characters. Might differ in UTF16 etc.
+    # Might be worth some research here to determine if we can get an
+    # accurate byte count out of the line instead.
+    
+    start = file.tell()
+    log.debug("Starting line read at %d", start)
+    line = file.readline()
+    log.debug("Read '%s'", line)
+    end = file.tell()
+    log.debug("Line read finished at %d", end)
+    
+    if start == end:
+        # If the file has ended, we're done, break
+        log.debug("File end encountered, exiting")
+        return (None, 0)
+    
+    return (line, end-start)
+    
+def skim_step_stream(lines, file):
+    """ Steps forward using pedestrian line reading method """
+    for n in range(0, lines):
+        file.readline()
+    line = file.readline()
+    return (line, len(line))
+
+def skim_generator(lines, file):
+    """ Returns a generator for skimming lines in this file """
+    total_length = 0
+    count = 0
+    seekable = True
+    
+    # Try and seek in the file. If it's a stream, we can't do it
+    try:
+        file.seek(0, WHENCE_RELATIVE)
+    except IOError, e:
+        seekable = False
+        log.debug("File is not seekable, falling back to reading")
+        
+    
+    if seekable:
+        # Cool seek-jump method
+        while True:
+            (line, length) = skim_step_seekable(count and (total_length/count) or 80, lines, file)
+            
+            if length == 0:
+                # Empty (including no newline). We're done
+                return
+            
+            count += 1
+            total_length += length
+            
+            yield line
+    else:
+        # Sad, old-school readline method
+        while True:
+            (line, length) = skim_step_stream(lines, file)
+            
+            if length == 0:
+                # Empty (including no newline). We're done
+                return
+        
+            yield line
+
+def skim(lines, file):
+    """ Skim through the provided file printing out one line in every (lines) """
+    for line in skim_generator(lines, file):
+        sys.stdout.write(line)
+    
+
+if __name__ == "__main__":
+    usage = "usage: %prog [options] [filename]"
+    parser = OptionParser(usage="usage: %prog [options] filename")
+    parser.add_option("--verbose","-v",
+                      help = "print debugging output",
+                      action = "store_true")
+    parser.add_option("--lines","-l",
+                      help = "number of lines to skip",
+                      type = "int",
+                      default = 100,
+                      action = "store")
+    (options, args) = parser.parse_args()
+    if options.verbose:
+        log.setLevel(logging.DEBUG)
+    
+    log.debug("Verbose mode: %s" % options.verbose)
+    log.debug("Lines to skip: %d" % options.lines)
+    
+    if len(args) > 0 and args[0] != '-':
+        skim(options.lines, open(args[0],'rb'))
+    else:
+        skim(options.lines, sys.stdin)
