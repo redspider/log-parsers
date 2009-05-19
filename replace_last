@@ -1,0 +1,66 @@
+#!/usr/bin/python
+"""
+replace_last: Replace the last match in a file
+
+Copyright (c) 2009, Richard Clark, Red Spider Limited <richard@redspider.co.nz>
+Contributers include:
+    Stephen J (Some script boilerplate code adopted from his NZPUG presentation)
+
+See LICENSE file for details.
+
+"""
+
+import os, sys, random, logging, re
+from optparse import OptionParser
+
+WHENCE_RELATIVE = 1
+
+logging.basicConfig(level=logging.WARN)
+log = logging.getLogger('Skim')
+
+def replace_last_generator(match, replace, file):
+    buffer = ""
+    rbuffer = None
+    for line in file:
+        if re.search(match, line):
+            yield buffer
+            if not rbuffer is None:
+                yield rbuffer
+            buffer = line
+            rbuffer = None
+        else:
+            if rbuffer is None:
+                rbuffer = line
+            else:
+                rbuffer += line
+    
+    yield re.sub(r'(.*)%s(.*?)$' % match, '\\1' + replace + '\\2', buffer)
+    if not rbuffer is None:
+        yield rbuffer
+
+def replace_last(match, replace, file):
+    """ Replace the last entry in the file """
+    for chunk in replace_last_generator(match, replace, file):
+        sys.stdout.write(chunk)
+
+if __name__ == "__main__":
+    usage = "usage: %prog [options] match replace [filename]"
+    parser = OptionParser(usage="usage: %prog [options] match replace filename")
+    parser.add_option("--verbose","-v",
+                      help = "print debugging output",
+                      action = "store_true")
+    (options, args) = parser.parse_args()
+    if options.verbose:
+        log.setLevel(logging.DEBUG)
+    
+    log.debug("Verbose mode: %s" % options.verbose)
+    
+    (match, replace) = args[:2]    
+    
+    log.debug("Match: %s" % match)
+    log.debug("Replace: %s" % replace)
+    
+    if len(args) > 2 and args[2] != '-':
+        replace_last(match, replace, open(args[2],'rb'))
+    else:
+        replace_last(match, replace, sys.stdin)
